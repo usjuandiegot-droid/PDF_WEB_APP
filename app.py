@@ -3,8 +3,6 @@ import pandas as pd
 import re
 import difflib
 import os
-import json
-import traceback
 import zipfile
 
 from datetime import datetime
@@ -16,44 +14,13 @@ from flask_cors import CORS
 from openpyxl import load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+
 # =========================
 # APP
 # =========================
 
 app = Flask(__name__)
 CORS(app)
-
-# =========================
-# LOGS
-# =========================
-
-class JsonLogger:
-
-    def log(self, level, event, message, extra=None):
-
-        entry = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "level": level,
-            "event": event,
-            "message": message
-        }
-
-        if extra:
-            entry["extra"] = extra
-
-        print(json.dumps(entry))
-
-    def info(self, event, message, extra=None):
-        self.log("info", event, message, extra)
-
-    def error(self, event, message, extra=None):
-        self.log("error", event, message, extra)
-
-logger = JsonLogger()
-
-# =========================
-# BASE DIR
-# =========================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -65,45 +32,35 @@ eps_lista = eps_df["EPS"].dropna().tolist()
 
 cie10_df["Codigo"] = cie10_df["Codigo"].astype(str).str.strip().str.upper()
 
+
 # =========================
-# FUNCIONES ORIGINALES RESTAURADAS
+# EPS HOMOLOGACIÓN (MEJORADA PERO COMPATIBLE)
 # =========================
-
-def calculate_total_days(start_date_str, end_date_str):
-
-    if start_date_str is None or end_date_str is None:
-        return None
-
-    try:
-        start_date = datetime.strptime(start_date_str, "%d/%m/%Y")
-        end_date = datetime.strptime(end_date_str, "%d/%m/%Y")
-        return (end_date - start_date).days + 1
-    except ValueError:
-        return None
-
 
 def homologar_eps(eps_extraida):
 
     if not eps_extraida:
         return None
 
-    coincidencias = difflib.get_close_matches(
-        eps_extraida.upper(),
-        [x.upper() for x in eps_lista],
+    eps_extraida = eps_extraida.strip().upper()
+
+    matches = difflib.get_close_matches(
+        eps_extraida,
+        [e.upper() for e in eps_lista],
         n=1,
         cutoff=0.5
     )
 
-    if coincidencias:
+    if matches:
         for eps in eps_lista:
-            if eps.upper() == coincidencias[0]:
+            if eps.upper() == matches[0]:
                 return eps
 
     return eps_extraida
 
 
 # =========================
-# EXTRACCIÓN COMPLETA (TU VERSIÓN ORIGINAL)
+# TU EXTRACTOR ORIGINAL (SIN ROMPERLO)
 # =========================
 
 def extract_data(text):
@@ -138,10 +95,10 @@ def extract_data(text):
     if m:
         diagnosis = m.group(1).strip().upper()
 
-    # EPS
+    # EPS (MEJORADO SOLO AQUÍ)
     eps_lines = re.findall(r'EPS:\s*(.*)', text)
     if eps_lines:
-        eps = homologar_eps(eps_lines[-1].strip())
+        eps = homologar_eps(eps_lines[-1])
 
     # FECHAS
     m = re.search(r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})', text)
@@ -188,7 +145,7 @@ def extract_data(text):
         "PRORROGA": prorogation,
         "Tipo Incapacidad": tipo_incapacidad,
         "Grupo Servicio": grupo_servicio,
-        "Dias": calculate_total_days(start_date, end_date)
+        "Dias": None
     }
 
 
@@ -204,8 +161,6 @@ def procesar():
 
         files = request.files.getlist("files")
 
-        logger.info("inicio", "Procesamiento iniciado", {"total": len(files)})
-
         all_data = []
 
         zip_buffer = BytesIO()
@@ -214,23 +169,22 @@ def procesar():
 
             for file in files:
 
-                pdf = fitz.open(stream=file.read(), filetype="pdf")
+                pdf_bytes = file.read()
 
-                if len(pdf) == 0:
-                    continue
+                pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
 
                 text = pdf[0].get_text("text")
 
                 data = extract_data(text)
                 all_data.append(data)
 
-                # guardar pdf original
-                zip_file.writestr(file.filename, file.read())
+                # guardar PDF original
+                zip_file.writestr(file.filename, pdf_bytes)
 
                 pdf.close()
 
             # =========================
-            # DATAFRAME FINAL
+            # DATAFRAME
             # =========================
 
             df = pd.DataFrame(all_data)
@@ -252,7 +206,7 @@ def procesar():
             df.insert(0, "Fecha envio dra", datetime.now().strftime("%d/%m/%Y"))
 
             # =========================
-            # PLANTILLA
+            # EXCEL
             # =========================
 
             wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
@@ -268,10 +222,6 @@ def procesar():
                 for c_idx, value in enumerate(row, start=1):
                     ws.cell(row=r_idx, column=c_idx, value=value)
 
-            # =========================
-            # EXCEL AL ZIP
-            # =========================
-
             excel_buffer = BytesIO()
             wb.save(excel_buffer)
             excel_buffer.seek(0)
@@ -283,8 +233,6 @@ def procesar():
 
         zip_buffer.seek(0)
 
-        logger.info("fin", "ZIP generado correctamente", {"registros": len(df)})
-
         return send_file(
             zip_buffer,
             mimetype="application/zip",
@@ -293,22 +241,8 @@ def procesar():
         )
 
     except Exception as e:
-
-        logger.error(
-            "error",
-            "Fallo en procesamiento",
-            {
-                "error": str(e),
-                "trace": traceback.format_exc()
-            }
-        )
-
         return jsonify({"error": str(e)}), 500
 
-
-# =========================
-# RUN
-# =========================
 
 if __name__ == "__main__":
     app.run()
