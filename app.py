@@ -2,9 +2,10 @@ import fitz
 import pandas as pd
 import re
 import difflib
+import subprocess
+import os
 
 from datetime import datetime
-from io import BytesIO
 
 from flask import Flask, request, send_file
 from flask_cors import CORS
@@ -115,7 +116,10 @@ def procesar_pdfs():
 
         for file in files:
 
-            # Abrir PDF desde memoria
+            # =========================
+            # ABRIR PDF
+            # =========================
+
             pdf_document = fitz.open(
                 stream=file.read(),
                 filetype="pdf"
@@ -342,7 +346,7 @@ def procesar_pdfs():
             pdf_document.close()
 
         # =========================
-        # DATAFRAME
+        # CREAR DATAFRAME
         # =========================
 
         df = pd.DataFrame(all_data)
@@ -394,17 +398,16 @@ def procesar_pdfs():
         )
 
         # =========================
-        # USAR PLANTILLA
+        # CARGAR PLANTILLA
         # =========================
 
-        # Cargar plantilla
         wb = load_workbook("PLANTILLA.xlsx")
 
         # Hoja INFO
         ws = wb["INFO"]
 
         # =========================
-        # LIMPIAR DATOS ANTERIORES
+        # LIMPIAR INFO
         # =========================
 
         if ws.max_row > 1:
@@ -442,28 +445,52 @@ def procesar_pdfs():
                 )
 
         # =========================
-        # GUARDAR EN MEMORIA
+        # NOMBRES ARCHIVOS
         # =========================
 
-        output = BytesIO()
+        fecha_archivo = datetime.now().strftime('%d-%m-%Y')
 
-        wb.save(output)
+        excel_filename = f"Formato Rechazos Sura {fecha_archivo}.xlsx"
 
-        output.seek(0)
+        pdf_filename = f"Formato Rechazos Sura {fecha_archivo}.pdf"
 
         # =========================
-        # RETORNAR EXCEL
+        # GUARDAR EXCEL
+        # =========================
+
+        wb.save(excel_filename)
+
+        # =========================
+        # CONVERTIR A PDF
+        # =========================
+
+        subprocess.run([
+
+            "libreoffice",
+
+            "--headless",
+
+            "--convert-to",
+
+            "pdf",
+
+            "--outdir",
+
+            ".",
+
+            excel_filename
+
+        ])
+
+        # =========================
+        # RETORNAR PDF
         # =========================
 
         return send_file(
 
-            output,
+            pdf_filename,
 
-            download_name=f"Formato Rechazos Sura {datetime.now().strftime('%d-%m-%Y')}.xlsx",
-
-            as_attachment=True,
-
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            as_attachment=True
 
         )
 
