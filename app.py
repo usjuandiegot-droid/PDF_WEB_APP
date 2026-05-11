@@ -2,103 +2,119 @@ import fitz
 import pandas as pd
 import re
 import difflib
-import subprocess
-import zipfile
+import os
+import json
+import traceback
 
 from datetime import datetime
+from io import BytesIO
 
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 
 from openpyxl import load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+
+# =========================
+# APP
+# =========================
+
 app = Flask(__name__)
-
-# =========================
-# HABILITAR CORS
-# =========================
-
 CORS(app)
 
+
 # =========================
-# CARGAR ARCHIVOS
+# LOGGER ESTRUCTURADO
 # =========================
 
-# CIE10
-cie10_df = pd.read_excel("CIE10.xlsx")
+class JsonLogger:
 
-# EPS parametrizadas
-eps_df = pd.read_excel("EPS.xlsx")
+    def _log(self, level, event, message, extra=None):
 
-# Limpiar nombres columnas
-eps_df.columns = (
-    eps_df.columns
-    .str.strip()
-    .str.upper()
-)
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": level,
+            "event": event,
+            "message": message
+        }
 
-# Lista EPS
+        if extra:
+            log_entry["extra"] = extra
+
+        print(json.dumps(log_entry))
+
+    def info(self, event, message, extra=None):
+        self._log("info", event, message, extra)
+
+    def error(self, event, message, extra=None):
+        self._log("error", event, message, extra)
+
+    def warning(self, event, message, extra=None):
+        self._log("warning", event, message, extra)
+
+
+logger = JsonLogger()
+
+
+# =========================
+# BASE DIR (IMPORTANTE RENDER)
+# =========================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+# =========================
+# CARGA ARCHIVOS
+# =========================
+
+cie10_df = pd.read_excel(os.path.join(BASE_DIR, "CIE10.xlsx"))
+eps_df = pd.read_excel(os.path.join(BASE_DIR, "EPS.xlsx"))
+wb_template = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
+
+eps_df.columns = eps_df.columns.str.strip().str.upper()
 eps_lista = eps_df["EPS"].tolist()
+
 
 # =========================
 # FUNCIONES
 # =========================
 
-# Calcular días
 def calculate_total_days(start_date_str, end_date_str):
 
     if start_date_str is None or end_date_str is None:
         return None
 
     try:
+        start_date = datetime.strptime(start_date_str, "%d/%m/%Y")
+        end_date = datetime.strptime(end_date_str, "%d/%m/%Y")
 
-        start_date = datetime.strptime(
-            start_date_str,
-            "%d/%m/%Y"
-        )
+        return (end_date - start_date).days + 1
 
-        end_date = datetime.strptime(
-            end_date_str,
-            "%d/%m/%Y"
-        )
-
-        total_days = (
-            end_date - start_date
-        ).days + 1
-
-        return total_days
-
-    except ValueError:
-
+    except Exception:
         return None
 
-# Homologar EPS
+
 def homologar_eps(eps_extraida):
 
     if not eps_extraida:
         return None
 
     coincidencias = difflib.get_close_matches(
-
         eps_extraida.upper(),
-
         [x.upper() for x in eps_lista],
-
         n=1,
         cutoff=0.5
-
     )
 
     if coincidencias:
 
         for eps in eps_lista:
-
             if eps.upper() == coincidencias[0]:
-
                 return eps
 
     return eps_extraida
+
 
 # =========================
 # RUTA PRINCIPAL
@@ -108,242 +124,117 @@ def homologar_eps(eps_extraida):
 
 def procesar_pdfs():
 
+    request_id = str(datetime.utcnow().timestamp())
+
     try:
 
         files = request.files.getlist("files")
+
+        logger.info(
+            event="procesamiento_inicio",
+            message="Inicio de procesamiento",
+            extra={"request_id": request_id, "total_archivos": len(files)}
+        )
 
         all_data = []
 
         for file in files:
 
-            # =========================
-            # ABRIR PDF
-            # =========================
+            try:
 
-            pdf_document = fitz.open(
-                stream=file.read(),
-                filetype="pdf"
-            )
-
-            # Primera página
-            first_page = pdf_document[0]
-
-            text = first_page.get_text("text")
-
-            # =========================
-            # VARIABLES
-            # =========================
-
-            patient_name = None
-            identification = None
-            diagnosis = None
-            date_of_attention = None
-            order = None
-            prorogation = None
-            start_date = None
-            end_date = None
-            eps = None
-            tipo_incapacidad = None
-            grupo_servicio = None
-
-            # =========================
-            # PACIENTE
-            # =========================
-
-            patient_name_match = re.search(
-                r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
-                text
-            )
-
-            if patient_name_match:
-
-                patient_name = patient_name_match.group(1).strip()
-
-            # =========================
-            # DOCUMENTO
-            # =========================
-
-            identification_match = re.search(
-                r'Identificación:\s*CC\s*(\d+)',
-                text
-            )
-
-            if identification_match:
-
-                identification = identification_match.group(1).strip()
-
-            # =========================
-            # DIAGNÓSTICO
-            # =========================
-
-            diagnosis_code_match = re.search(
-                r'\b([A-Z]\d{2,3}[A-Z]?)\b',
-                text
-            )
-
-            if diagnosis_code_match:
-
-                diagnosis = diagnosis_code_match.group(1).strip()
-
-            # =========================
-            # EPS
-            # =========================
-
-            eps_lines = re.findall(
-                r'EPS:\s*(.*)',
-                text
-            )
-
-            if eps_lines:
-
-                eps_original = eps_lines[-1].strip()
-
-                eps = homologar_eps(
-                    eps_original
+                pdf_document = fitz.open(
+                    stream=file.read(),
+                    filetype="pdf"
                 )
 
-            # =========================
-            # FECHA INICIO
-            # =========================
+                if len(pdf_document) == 0:
+                    logger.warning(
+                        "pdf_vacio",
+                        "PDF sin páginas",
+                        {"file": file.filename}
+                    )
+                    continue
 
-            start_date_match = re.search(
-                r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})',
-                text
-            )
+                text = pdf_document[0].get_text("text")
 
-            if start_date_match:
+                # =========================
+                # VARIABLES
+                # =========================
 
-                start_date = start_date_match.group(1).strip()
+                patient_name = None
+                identification = None
+                diagnosis = None
+                start_date = None
+                end_date = None
+                eps = None
 
-            # =========================
-            # FECHA FIN
-            # =========================
+                # =========================
+                # EXTRACCIÓN
+                # =========================
 
-            end_date_match = re.search(
-                r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})',
-                text
-            )
+                patient_match = re.search(
+                    r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
+                    text
+                )
+                if patient_match:
+                    patient_name = patient_match.group(1).strip()
 
-            if end_date_match:
+                id_match = re.search(
+                    r'Identificación:\s*CC\s*(\d+)',
+                    text
+                )
+                if id_match:
+                    identification = id_match.group(1)
 
-                end_date = end_date_match.group(1).strip()
+                dx_match = re.search(r'\b([A-Z]\d{2,3}[A-Z]?)\b', text)
+                if dx_match:
+                    diagnosis = dx_match.group(1)
 
-            # =========================
-            # FECHA ATENCIÓN
-            # =========================
+                eps_match = re.findall(r'EPS:\s*(.*)', text)
+                if eps_match:
+                    eps = homologar_eps(eps_match[-1].strip())
 
-            date_of_attention_match = re.search(
-                r'Orden:\s*\d+\n(\d{4}/\d{2}/\d{2})',
-                text
-            )
+                start_match = re.search(r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})', text)
+                if start_match:
+                    start_date = start_match.group(1)
 
-            if date_of_attention_match:
+                end_match = re.search(r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})', text)
+                if end_match:
+                    end_date = end_match.group(1)
 
-                date_of_attention = date_of_attention_match.group(1).strip()
+                total_days = calculate_total_days(start_date, end_date)
 
-            # =========================
-            # ORDEN
-            # =========================
+                all_data.append({
 
-            order_match = re.search(
-                r'Orden:\s*(\d+)',
-                text
-            )
+                    "Documento": identification,
+                    "Paciente": patient_name,
+                    "DX": diagnosis,
+                    "EPS": eps,
+                    "Fecha Inicio": start_date,
+                    "Fecha Fin": end_date,
+                    "Total Días": total_days
 
-            if order_match:
+                })
 
-                order = order_match.group(1).strip()
+                pdf_document.close()
 
-            # =========================
-            # PRÓRROGA
-            # =========================
+                logger.info(
+                    event="pdf_procesado",
+                    message="PDF procesado correctamente",
+                    extra={"file": file.filename}
+                )
 
-            prorogation_match = re.search(
-                r'Prórroga:\s*(NO|SI)',
-                text
-            )
+            except Exception as e:
 
-            if prorogation_match:
-
-                prorogation = prorogation_match.group(1).strip()
-
-            # =========================
-            # TIPO INCAPACIDAD
-            # =========================
-
-            tipo_incapacidad_match = re.search(
-                r'Tipo Incapacidad:\s*(.*)',
-                text
-            )
-
-            if tipo_incapacidad_match:
-
-                tipo_incapacidad = tipo_incapacidad_match.group(1).strip()
-
-            # =========================
-            # GRUPO SERVICIO
-            # =========================
-
-            grupo_servicio_match = re.search(
-                r'Grupo Servicio:\s*(.*)',
-                text
-            )
-
-            if grupo_servicio_match:
-
-                grupo_servicio = grupo_servicio_match.group(1).strip()
-
-            # =========================
-            # TOTAL DÍAS
-            # =========================
-
-            total_days = calculate_total_days(
-                start_date,
-                end_date
-            )
-
-            # =========================
-            # AGREGAR DATA
-            # =========================
-
-            all_data.append({
-
-                "Documento": identification,
-
-                "Paciente": patient_name,
-
-                "CONCATENAR":
-                    f"{identification} {patient_name}"
-                    if identification and patient_name
-                    else None,
-
-                "Fecha de Inicio": start_date,
-
-                "Fecha de Fin": end_date,
-
-                "Total de Días": total_days,
-
-                "Dias": None,
-
-                "EPS": eps,
-
-                "Observacion": None,
-
-                "DX": diagnosis,
-
-                "FECHA": date_of_attention,
-
-                "ORDEN": order,
-
-                "PRORROGA": prorogation,
-
-                "Tipo Incapacidad": tipo_incapacidad,
-
-                "Grupo Servicio": grupo_servicio
-
-            })
-
-            pdf_document.close()
+                logger.error(
+                    event="error_pdf_individual",
+                    message="Error procesando PDF",
+                    extra={
+                        "file": file.filename,
+                        "error": str(e),
+                        "trace": traceback.format_exc()
+                    }
+                )
 
         # =========================
         # DATAFRAME
@@ -351,177 +242,80 @@ def procesar_pdfs():
 
         df = pd.DataFrame(all_data)
 
-        # =========================
-        # HOMOLOGAR CIE10
-        # =========================
-
         df = pd.merge(
-
             df,
-
             cie10_df,
-
-            left_on='DX',
-
-            right_on='Codigo',
-
-            how='left'
-
+            left_on="DX",
+            right_on="Codigo",
+            how="left"
         )
 
-        # Concatenar DX + Nombre
-        df['DX'] = (
+        df["DX"] = df["DX"].fillna("") + " " + df["Nombre"].fillna("")
+        df.drop(columns=["Nombre", "Codigo"], inplace=True, errors="ignore")
 
-            df['DX'].fillna('')
-
-            + ' '
-
-            + df['Nombre'].fillna('')
-
-        )
-
-        # Eliminar columnas
-        df = df.drop(
-            columns=['Nombre', 'Codigo'],
-            errors='ignore'
-        )
-
-        # Fecha envío
         df.insert(
-
             0,
-
-            'Fecha envio dra',
-
+            "Fecha Generación",
             datetime.now().strftime("%d/%m/%Y")
-
         )
 
         # =========================
-        # CARGAR PLANTILLA
+        # PLANTILLA
         # =========================
 
-        wb = load_workbook("PLANTILLA.xlsx")
+        wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
 
-        # Hoja INFO
+        if "INFO" not in wb.sheetnames:
+            return jsonify({"error": "Hoja INFO no existe"}), 500
+
         ws = wb["INFO"]
 
-        # =========================
-        # LIMPIAR INFO
-        # =========================
-
         if ws.max_row > 1:
-
-            ws.delete_rows(
-                2,
-                ws.max_row
-            )
-
-        # =========================
-        # INSERTAR DATAFRAME
-        # =========================
+            ws.delete_rows(2, ws.max_row)
 
         for r_idx, row in enumerate(
-
-            dataframe_to_rows(
-                df,
-                index=False,
-                header=False
-            ),
-
+            dataframe_to_rows(df, index=False, header=False),
             start=2
-
         ):
+            for c_idx, value in enumerate(row, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
 
-            for c_idx, value in enumerate(
-                row,
-                start=1
-            ):
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
 
-                ws.cell(
-                    row=r_idx,
-                    column=c_idx,
-                    value=value
-                )
-
-        # =========================
-        # NOMBRES ARCHIVOS
-        # =========================
-
-        fecha_archivo = datetime.now().strftime('%d-%m-%Y')
-
-        excel_filename = f"Formato Rechazos Sura {fecha_archivo}.xlsx"
-
-        pdf_filename = f"Formato Rechazos Sura {fecha_archivo}.pdf"
-
-        zip_filename = f"Formato Rechazos Sura {fecha_archivo}.zip"
-
-        # =========================
-        # GUARDAR EXCEL
-        # =========================
-
-        wb.save(excel_filename)
-
-        # =========================
-        # CONVERTIR A PDF
-        # =========================
-
-        subprocess.run([
-
-            "libreoffice",
-
-            "--headless",
-
-            "--convert-to",
-
-            "pdf",
-
-            "--outdir",
-
-            ".",
-
-            excel_filename
-
-        ])
-
-        # =========================
-        # CREAR ZIP
-        # =========================
-
-        with zipfile.ZipFile(
-
-            zip_filename,
-
-            'w',
-
-            zipfile.ZIP_DEFLATED
-
-        ) as zipf:
-
-            zipf.write(excel_filename)
-
-            zipf.write(pdf_filename)
-
-        # =========================
-        # RETORNAR ZIP
-        # =========================
+        logger.info(
+            event="procesamiento_finalizado",
+            message="Archivo generado correctamente",
+            extra={"request_id": request_id, "registros": len(df)}
+        )
 
         return send_file(
-
-            zip_filename,
-
-            as_attachment=True
-
+            output,
+            download_name=f"Formato Rechazos Sura {datetime.now().strftime('%d-%m-%Y')}.xlsx",
+            as_attachment=True,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
     except Exception as e:
 
-        return str(e), 500
+        logger.error(
+            event="error_general",
+            message="Error en endpoint /procesar",
+            extra={
+                "error": str(e),
+                "trace": traceback.format_exc()
+            }
+        )
+
+        return jsonify({
+            "error": str(e)
+        }), 500
+
 
 # =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-
-    app.run(debug=True)
+    app.run()
