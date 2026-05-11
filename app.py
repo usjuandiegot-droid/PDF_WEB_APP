@@ -26,7 +26,7 @@ cie10_df = pd.read_excel("CIE10.xlsx")
 eps_df = pd.read_excel("EPS.xlsx")
 
 # Lista EPS
-eps_lista = eps_df["PARAMETRO"].tolist()
+eps_lista = eps_df["EPS"].tolist()
 
 # =========================
 # FUNCIONES
