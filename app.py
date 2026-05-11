@@ -26,12 +26,12 @@ CORS(app)
 
 
 # =========================
-# LOGS
+# LOGS ESTRUCTURADOS
 # =========================
 
 class JsonLogger:
 
-    def _log(self, level, event, message, extra=None):
+    def log(self, level, event, message, extra=None):
 
         log_entry = {
             "timestamp": datetime.utcnow().isoformat(),
@@ -46,10 +46,10 @@ class JsonLogger:
         print(json.dumps(log_entry))
 
     def info(self, event, message, extra=None):
-        self._log("info", event, message, extra)
+        self.log("info", event, message, extra)
 
     def error(self, event, message, extra=None):
-        self._log("error", event, message, extra)
+        self.log("error", event, message, extra)
 
 
 logger = JsonLogger()
@@ -63,6 +63,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 cie10_df = pd.read_excel(os.path.join(BASE_DIR, "CIE10.xlsx"))
 eps_df = pd.read_excel(os.path.join(BASE_DIR, "EPS.xlsx"))
+
 wb_template = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
 
 eps_df.columns = eps_df.columns.str.strip().str.upper()
@@ -75,15 +76,15 @@ cie10_df["Codigo"] = cie10_df["Codigo"].astype(str).str.strip().str.upper()
 # FUNCIONES
 # =========================
 
-def calculate_total_days(start, end):
+def calcular_dias(inicio, fin):
 
-    if not start or not end:
+    if not inicio or not fin:
         return None
 
     try:
         return (
-            datetime.strptime(end, "%d/%m/%Y")
-            - datetime.strptime(start, "%d/%m/%Y")
+            datetime.strptime(fin, "%d/%m/%Y")
+            - datetime.strptime(inicio, "%d/%m/%Y")
         ).days + 1
 
     except:
@@ -128,7 +129,12 @@ def procesar():
 
         zip_buffer = BytesIO()
 
+        # 🔥 TODO DEBE IR DENTRO DEL WITH
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+
+            # =========================
+            # PROCESAR PDFs
+            # =========================
 
             for file in files:
 
@@ -156,71 +162,70 @@ def procesar():
                     "EPS": homologar_eps(eps[-1].strip()) if eps else None,
                     "Inicio": start.group(1) if start else None,
                     "Fin": end.group(1) if end else None,
-                    "Dias": calculate_total_days(
+                    "Dias": calcular_dias(
                         start.group(1) if start else None,
                         end.group(1) if end else None
                     )
                 })
 
-                # 👉 agregar PDF al ZIP
+                # ✔ agregar PDF al ZIP
                 zip_file.writestr(file.filename, file_bytes)
 
                 pdf.close()
 
-        # =========================
-        # DATAFRAME
-        # =========================
+            # =========================
+            # DATAFRAME
+            # =========================
 
-        df = pd.DataFrame(all_data)
+            df = pd.DataFrame(all_data)
 
-        df["DX"] = df["DX"].astype(str).str.strip().str.upper()
+            df["DX"] = df["DX"].astype(str).str.strip().str.upper()
 
-        df = pd.merge(
-            df,
-            cie10_df,
-            left_on="DX",
-            right_on="Codigo",
-            how="left"
-        )
+            df = pd.merge(
+                df,
+                cie10_df,
+                left_on="DX",
+                right_on="Codigo",
+                how="left"
+            )
 
-        df["DX"] = (
-            df["DX"].fillna("") + " - " + df["Nombre"].fillna("")
-        )
+            df["DX"] = df["DX"].fillna("") + " - " + df["Nombre"].fillna("")
 
-        df.drop(columns=["Nombre", "Codigo"], inplace=True, errors="ignore")
+            df.drop(columns=["Nombre", "Codigo"], inplace=True, errors="ignore")
 
-        df.insert(0, "Fecha Generación", datetime.now().strftime("%d/%m/%Y"))
+            df.insert(0, "Fecha Generación", datetime.now().strftime("%d/%m/%Y"))
 
-        # =========================
-        # EXCEL PLANTILLA
-        # =========================
+            # =========================
+            # EXCEL EN PLANTILLA
+            # =========================
 
-        wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
-        ws = wb["INFO"]
+            wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
+            ws = wb["INFO"]
 
-        if ws.max_row > 1:
-            ws.delete_rows(2, ws.max_row)
+            if ws.max_row > 1:
+                ws.delete_rows(2, ws.max_row)
 
-        for r_idx, row in enumerate(
-            dataframe_to_rows(df, index=False, header=False),
-            start=2
-        ):
-            for c_idx, value in enumerate(row, start=1):
-                ws.cell(row=r_idx, column=c_idx, value=value)
+            for r_idx, row in enumerate(
+                dataframe_to_rows(df, index=False, header=False),
+                start=2
+            ):
+                for c_idx, value in enumerate(row, start=1):
+                    ws.cell(row=r_idx, column=c_idx, value=value)
 
-        # =========================
-        # AGREGAR EXCEL AL ZIP
-        # =========================
+            # =========================
+            # AGREGAR EXCEL AL ZIP
+            # =========================
 
-        excel_buffer = BytesIO()
-        wb.save(excel_buffer)
-        excel_buffer.seek(0)
+            excel_buffer = BytesIO()
+            wb.save(excel_buffer)
+            excel_buffer.seek(0)
 
-        zip_file.writestr(
-            f"Formato_Rechazos_Sura_{datetime.now().strftime('%d-%m-%Y')}.xlsx",
-            excel_buffer.read()
-        )
+            zip_file.writestr(
+                f"Formato_Rechazos_Sura_{datetime.now().strftime('%d-%m-%Y')}.xlsx",
+                excel_buffer.read()
+            )
 
+        # 🔥 fuera del with SOLO cerrar buffer
         zip_buffer.seek(0)
 
         logger.info("fin", "ZIP generado correctamente", {"registros": len(df)})
