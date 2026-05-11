@@ -2,6 +2,8 @@ import fitz
 import pandas as pd
 import re
 import os
+import difflib
+
 from datetime import datetime
 from io import BytesIO
 
@@ -10,223 +12,411 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 
+# Habilitar CORS
 CORS(app)
 
-# Cargar CIE10 una sola vez
+# =========================
+# CARGAR ARCHIVOS
+# =========================
+
+# CIE10
 cie10_df = pd.read_excel("CIE10.xlsx")
 
-# Función para calcular días
+# EPS parametrizadas
+eps_df = pd.read_excel("EPS.xlsx")
+
+# Lista EPS
+eps_lista = eps_df["PARAMETRO"].tolist()
+
+# =========================
+# FUNCIONES
+# =========================
+
+# Calcular días
 def calculate_total_days(start_date_str, end_date_str):
 
     if start_date_str is None or end_date_str is None:
         return None
 
     try:
-        start_date = datetime.strptime(start_date_str, "%d/%m/%Y")
-        end_date = datetime.strptime(end_date_str, "%d/%m/%Y")
 
-        total_days = (end_date - start_date).days + 1
+        start_date = datetime.strptime(
+            start_date_str,
+            "%d/%m/%Y"
+        )
+
+        end_date = datetime.strptime(
+            end_date_str,
+            "%d/%m/%Y"
+        )
+
+        total_days = (
+            end_date - start_date
+        ).days + 1
 
         return total_days
 
-    except:
+    except ValueError:
+
         return None
 
+# Homologar EPS
+def homologar_eps(eps_extraida):
+
+    if not eps_extraida:
+        return None
+
+    coincidencias = difflib.get_close_matches(
+
+        eps_extraida.upper(),
+
+        [x.upper() for x in eps_lista],
+
+        n=1,
+        cutoff=0.5
+
+    )
+
+    if coincidencias:
+
+        for eps in eps_lista:
+
+            if eps.upper() == coincidencias[0]:
+
+                return eps
+
+    return eps_extraida
+
+# =========================
+# RUTA PRINCIPAL
+# =========================
 
 @app.route('/procesar', methods=['POST'])
-def procesar():
 
-    archivos = request.files.getlist("files")
+def procesar_pdfs():
 
-    all_data = []
+    try:
 
-    for archivo in archivos:
+        files = request.files.getlist("files")
 
-        pdf_document = fitz.open(stream=archivo.read(), filetype="pdf")
+        all_data = []
 
-        first_page = pdf_document[0]
+        for file in files:
 
-        text = first_page.get_text("text")
+            # Abrir PDF desde memoria
+            pdf_document = fitz.open(
+                stream=file.read(),
+                filetype="pdf"
+            )
 
-        patient_name = None
-        identification = None
-        diagnosis = None
-        date_of_attention = None
-        order = None
-        prorogation = None
-        start_date = None
-        end_date = None
-        eps = None
-        tipo_incapacidad = None
-        grupo_servicio = None
+            # Primera página
+            first_page = pdf_document[0]
 
-        # REGEX
+            text = first_page.get_text("text")
 
-        patient_name_match = re.search(
-            r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
-            text
+            # =========================
+            # VARIABLES
+            # =========================
+
+            patient_name = None
+            identification = None
+            diagnosis = None
+            date_of_attention = None
+            order = None
+            prorogation = None
+            start_date = None
+            end_date = None
+            eps = None
+            tipo_incapacidad = None
+            grupo_servicio = None
+
+            # =========================
+            # EXTRACCIONES
+            # =========================
+
+            patient_name_match = re.search(
+                r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
+                text
+            )
+
+            if patient_name_match:
+
+                patient_name = patient_name_match.group(1).strip()
+
+            identification_match = re.search(
+                r'Identificación:\s*CC\s*(\d+)',
+                text
+            )
+
+            if identification_match:
+
+                identification = identification_match.group(1).strip()
+
+            diagnosis_code_match = re.search(
+                r'\b([A-Z]\d{2,3}[A-Z]?)\b',
+                text
+            )
+
+            if diagnosis_code_match:
+
+                diagnosis = diagnosis_code_match.group(1).strip()
+
+            # =========================
+            # EPS
+            # =========================
+
+            eps_lines = re.findall(
+                r'EPS:\s*(.*)',
+                text
+            )
+
+            if eps_lines:
+
+                eps_original = eps_lines[-1].strip()
+
+                eps = homologar_eps(
+                    eps_original
+                )
+
+            # =========================
+            # FECHAS
+            # =========================
+
+            start_date_match = re.search(
+                r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})',
+                text
+            )
+
+            if start_date_match:
+
+                start_date = start_date_match.group(1).strip()
+
+            end_date_match = re.search(
+                r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})',
+                text
+            )
+
+            if end_date_match:
+
+                end_date = end_date_match.group(1).strip()
+
+            # =========================
+            # FECHA ATENCIÓN
+            # =========================
+
+            date_of_attention_match = re.search(
+                r'Orden:\s*\d+\n(\d{4}/\d{2}/\d{2})',
+                text
+            )
+
+            if date_of_attention_match:
+
+                date_of_attention = date_of_attention_match.group(1).strip()
+
+            # =========================
+            # ORDEN
+            # =========================
+
+            order_match = re.search(
+                r'Orden:\s*(\d+)',
+                text
+            )
+
+            if order_match:
+
+                order = order_match.group(1).strip()
+
+            # =========================
+            # PRÓRROGA
+            # =========================
+
+            prorogation_match = re.search(
+                r'Prórroga:\s*(NO|SI)',
+                text
+            )
+
+            if prorogation_match:
+
+                prorogation = prorogation_match.group(1).strip()
+
+            # =========================
+            # TIPO INCAPACIDAD
+            # =========================
+
+            tipo_incapacidad_match = re.search(
+                r'Tipo Incapacidad:\s*(.*)',
+                text
+            )
+
+            if tipo_incapacidad_match:
+
+                tipo_incapacidad = tipo_incapacidad_match.group(1).strip()
+
+            # =========================
+            # GRUPO SERVICIO
+            # =========================
+
+            grupo_servicio_match = re.search(
+                r'Grupo Servicio:\s*(.*)',
+                text
+            )
+
+            if grupo_servicio_match:
+
+                grupo_servicio = grupo_servicio_match.group(1).strip()
+
+            # =========================
+            # TOTAL DÍAS
+            # =========================
+
+            total_days = calculate_total_days(
+                start_date,
+                end_date
+            )
+
+            # =========================
+            # AGREGAR DATA
+            # =========================
+
+            all_data.append({
+
+                "Documento": identification,
+
+                "Paciente": patient_name,
+
+                "CONCATENAR":
+
+                    f"{identification} {patient_name}"
+
+                    if identification and patient_name
+
+                    else None,
+
+                "Fecha de Inicio": start_date,
+
+                "Fecha de Fin": end_date,
+
+                "Total de Días": total_days,
+
+                "Dias": None,
+
+                "EPS": eps,
+
+                "Observacion": None,
+
+                "DX": diagnosis,
+
+                "FECHA": date_of_attention,
+
+                "ORDEN": order,
+
+                "PRORROGA": prorogation,
+
+                "Tipo Incapacidad": tipo_incapacidad,
+
+                "Grupo Servicio": grupo_servicio
+
+            })
+
+            pdf_document.close()
+
+        # =========================
+        # DATAFRAME
+        # =========================
+
+        df = pd.DataFrame(all_data)
+
+        # =========================
+        # HOMOLOGAR CIE10
+        # =========================
+
+        df = pd.merge(
+
+            df,
+
+            cie10_df,
+
+            left_on='DX',
+
+            right_on='Codigo',
+
+            how='left'
+
         )
 
-        if patient_name_match:
-            patient_name = patient_name_match.group(1).strip()
+        # Concatenar DX + Nombre
+        df['DX'] = (
 
-        identification_match = re.search(
-            r'Identificación:\s*CC\s*(\d+)',
-            text
+            df['DX'].fillna('')
+
+            + ' '
+
+            + df['Nombre'].fillna('')
+
         )
 
-        if identification_match:
-            identification = identification_match.group(1).strip()
-
-        diagnosis_code_match = re.search(
-            r'\b([A-Z]\d{2,3}[A-Z]?)\b',
-            text
+        # Eliminar columnas
+        df = df.drop(
+            columns=['Nombre', 'Codigo'],
+            errors='ignore'
         )
 
-        if diagnosis_code_match:
-            diagnosis = diagnosis_code_match.group(1).strip()
+        # Fecha envío
+        df.insert(
 
-        eps_lines = re.findall(r'EPS:\s*(.*)', text)
+            0,
 
-        if eps_lines:
-            eps = eps_lines[-1].strip()
+            'Fecha envio dra',
 
-        start_date_match = re.search(
-            r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})',
-            text
+            datetime.now().strftime("%d/%m/%Y")
+
         )
 
-        if start_date_match:
-            start_date = start_date_match.group(1).strip()
+        # =========================
+        # EXPORTAR EXCEL
+        # =========================
 
-        end_date_match = re.search(
-            r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})',
-            text
+        output = BytesIO()
+
+        with pd.ExcelWriter(
+
+            output,
+
+            engine='openpyxl'
+
+        ) as writer:
+
+            df.to_excel(
+                writer,
+                index=False
+            )
+
+        output.seek(0)
+
+        # =========================
+        # RETORNAR EXCEL
+        # =========================
+
+        return send_file(
+
+            output,
+
+            download_name=f"Formato Rechazos Sura {datetime.now().strftime('%d-%m-%Y')}.xlsx",
+
+            as_attachment=True,
+
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
         )
 
-        if end_date_match:
-            end_date = end_date_match.group(1).strip()
+    except Exception as e:
 
-        date_of_attention_match = re.search(
-            r'Orden:\s*\d+\n(\d{4}/\d{2}/\d{2})',
-            text
-        )
+        return str(e), 500
 
-        if date_of_attention_match:
-            date_of_attention = date_of_attention_match.group(1).strip()
+# =========================
+# RUN
+# =========================
 
-        order_match = re.search(r'Orden:\s*(\d+)', text)
+if __name__ == "__main__":
 
-        if order_match:
-            order = order_match.group(1).strip()
-
-        prorogation_match = re.search(
-            r'Prórroga:\s*(NO|SI)',
-            text
-        )
-
-        if prorogation_match:
-            prorogation = prorogation_match.group(1).strip()
-
-        tipo_incapacidad_match = re.search(
-            r'Tipo Incapacidad:\s*(.*)',
-            text
-        )
-
-        if tipo_incapacidad_match:
-            tipo_incapacidad = tipo_incapacidad_match.group(1).strip()
-
-        grupo_servicio_match = re.search(
-            r'Grupo Servicio:\s*(.*)',
-            text
-        )
-
-        if grupo_servicio_match:
-            grupo_servicio = grupo_servicio_match.group(1).strip()
-
-        total_days = calculate_total_days(
-            start_date,
-            end_date
-        )
-
-        all_data.append({
-
-            "Documento": identification,
-
-            "Paciente": patient_name,
-
-            "CONCATENAR":
-            f"{identification} {patient_name}"
-            if identification and patient_name else None,
-
-            "Fecha de Inicio": start_date,
-
-            "Fecha de Fin": end_date,
-
-            "Total de Días": total_days,
-
-            "Dias": None,
-
-            "EPS": eps,
-
-            "Observacion": None,
-
-            "DX": diagnosis,
-
-            "FECHA": date_of_attention,
-
-            "ORDEN": order,
-
-            "PRORROGA": prorogation,
-
-            "Tipo Incapacidad": tipo_incapacidad,
-
-            "Grupo Servicio": grupo_servicio
-
-        })
-
-        pdf_document.close()
-
-    # Crear DataFrame
-    df = pd.DataFrame(all_data)
-
-    # Merge CIE10
-    df = pd.merge(
-        df,
-        cie10_df,
-        left_on='DX',
-        right_on='Codigo',
-        how='left'
-    )
-
-    # Concatenar descripción
-    df['DX'] = df['DX'] + ' ' + df['Nombre']
-
-    # Eliminar columnas
-    df = df.drop(columns=['Nombre', 'Codigo'])
-
-    # Fecha actual
-    df.insert(
-        0,
-        'Fecha envio dra',
-        datetime.now().strftime("%d/%m/%Y")
-    )
-
-    # Crear Excel en memoria
-    output = BytesIO()
-
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-
-    output.seek(0)
-
-    return send_file(
-        output,
-        download_name="resultado.xlsx",
-        as_attachment=True,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-
-
-if __name__ == '__main__':
     app.run(debug=True)
