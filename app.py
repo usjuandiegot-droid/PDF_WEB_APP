@@ -1,7 +1,6 @@
 import fitz
 import pandas as pd
 import re
-import os
 import difflib
 
 from datetime import datetime
@@ -10,9 +9,15 @@ from io import BytesIO
 from flask import Flask, request, send_file
 from flask_cors import CORS
 
+from openpyxl import load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
 app = Flask(__name__)
 
-# Habilitar CORS
+# =========================
+# HABILITAR CORS
+# =========================
+
 CORS(app)
 
 # =========================
@@ -24,6 +29,13 @@ cie10_df = pd.read_excel("CIE10.xlsx")
 
 # EPS parametrizadas
 eps_df = pd.read_excel("EPS.xlsx")
+
+# Limpiar nombres columnas
+eps_df.columns = (
+    eps_df.columns
+    .str.strip()
+    .str.upper()
+)
 
 # Lista EPS
 eps_lista = eps_df["EPS"].tolist()
@@ -131,7 +143,7 @@ def procesar_pdfs():
             grupo_servicio = None
 
             # =========================
-            # EXTRACCIONES
+            # PACIENTE
             # =========================
 
             patient_name_match = re.search(
@@ -143,6 +155,10 @@ def procesar_pdfs():
 
                 patient_name = patient_name_match.group(1).strip()
 
+            # =========================
+            # DOCUMENTO
+            # =========================
+
             identification_match = re.search(
                 r'Identificación:\s*CC\s*(\d+)',
                 text
@@ -151,6 +167,10 @@ def procesar_pdfs():
             if identification_match:
 
                 identification = identification_match.group(1).strip()
+
+            # =========================
+            # DIAGNÓSTICO
+            # =========================
 
             diagnosis_code_match = re.search(
                 r'\b([A-Z]\d{2,3}[A-Z]?)\b',
@@ -179,7 +199,7 @@ def procesar_pdfs():
                 )
 
             # =========================
-            # FECHAS
+            # FECHA INICIO
             # =========================
 
             start_date_match = re.search(
@@ -190,6 +210,10 @@ def procesar_pdfs():
             if start_date_match:
 
                 start_date = start_date_match.group(1).strip()
+
+            # =========================
+            # FECHA FIN
+            # =========================
 
             end_date_match = re.search(
                 r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})',
@@ -285,11 +309,8 @@ def procesar_pdfs():
                 "Paciente": patient_name,
 
                 "CONCATENAR":
-
                     f"{identification} {patient_name}"
-
                     if identification and patient_name
-
                     else None,
 
                 "Fecha de Inicio": start_date,
@@ -373,23 +394,60 @@ def procesar_pdfs():
         )
 
         # =========================
-        # EXPORTAR EXCEL
+        # USAR PLANTILLA
+        # =========================
+
+        # Cargar plantilla
+        wb = load_workbook("PLANTILLA.xlsx")
+
+        # Hoja INFO
+        ws = wb["INFO"]
+
+        # =========================
+        # LIMPIAR DATOS ANTERIORES
+        # =========================
+
+        if ws.max_row > 1:
+
+            ws.delete_rows(
+                2,
+                ws.max_row
+            )
+
+        # =========================
+        # INSERTAR DATAFRAME
+        # =========================
+
+        for r_idx, row in enumerate(
+
+            dataframe_to_rows(
+                df,
+                index=False,
+                header=False
+            ),
+
+            start=2
+
+        ):
+
+            for c_idx, value in enumerate(
+                row,
+                start=1
+            ):
+
+                ws.cell(
+                    row=r_idx,
+                    column=c_idx,
+                    value=value
+                )
+
+        # =========================
+        # GUARDAR EN MEMORIA
         # =========================
 
         output = BytesIO()
 
-        with pd.ExcelWriter(
-
-            output,
-
-            engine='openpyxl'
-
-        ) as writer:
-
-            df.to_excel(
-                writer,
-                index=False
-            )
+        wb.save(output)
 
         output.seek(0)
 
