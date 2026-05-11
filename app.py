@@ -23,6 +23,10 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 app = Flask(__name__)
 CORS(app)
 
+from flask import Flask
+
+
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
 # =========================
 # LOGS ESTRUCTURADOS
