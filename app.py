@@ -3,7 +3,7 @@ import pandas as pd
 import re
 import difflib
 import subprocess
-import os
+import zipfile
 
 from datetime import datetime
 
@@ -346,7 +346,7 @@ def procesar_pdfs():
             pdf_document.close()
 
         # =========================
-        # CREAR DATAFRAME
+        # DATAFRAME
         # =========================
 
         df = pd.DataFrame(all_data)
@@ -454,6 +454,8 @@ def procesar_pdfs():
 
         pdf_filename = f"Formato Rechazos Sura {fecha_archivo}.pdf"
 
+        zip_filename = f"Formato Rechazos Sura {fecha_archivo}.zip"
+
         # =========================
         # GUARDAR EXCEL
         # =========================
@@ -483,12 +485,30 @@ def procesar_pdfs():
         ])
 
         # =========================
-        # RETORNAR PDF
+        # CREAR ZIP
+        # =========================
+
+        with zipfile.ZipFile(
+
+            zip_filename,
+
+            'w',
+
+            zipfile.ZIP_DEFLATED
+
+        ) as zipf:
+
+            zipf.write(excel_filename)
+
+            zipf.write(pdf_filename)
+
+        # =========================
+        # RETORNAR ZIP
         # =========================
 
         return send_file(
 
-            pdf_filename,
+            zip_filename,
 
             as_attachment=True
 
