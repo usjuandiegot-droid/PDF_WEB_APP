@@ -16,7 +16,6 @@ from flask_cors import CORS
 from openpyxl import load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 
-
 # =========================
 # APP
 # =========================
@@ -24,16 +23,15 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 app = Flask(__name__)
 CORS(app)
 
-
 # =========================
-# LOGS ESTRUCTURADOS
+# LOGS
 # =========================
 
 class JsonLogger:
 
     def log(self, level, event, message, extra=None):
 
-        log_entry = {
+        entry = {
             "timestamp": datetime.utcnow().isoformat(),
             "level": level,
             "event": event,
@@ -41,9 +39,9 @@ class JsonLogger:
         }
 
         if extra:
-            log_entry["extra"] = extra
+            entry["extra"] = extra
 
-        print(json.dumps(log_entry))
+        print(json.dumps(entry))
 
     def info(self, event, message, extra=None):
         self.log("info", event, message, extra)
@@ -51,12 +49,10 @@ class JsonLogger:
     def error(self, event, message, extra=None):
         self.log("error", event, message, extra)
 
-
 logger = JsonLogger()
 
-
 # =========================
-# ARCHIVOS BASE
+# BASE DIR
 # =========================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -64,30 +60,25 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 cie10_df = pd.read_excel(os.path.join(BASE_DIR, "CIE10.xlsx"))
 eps_df = pd.read_excel(os.path.join(BASE_DIR, "EPS.xlsx"))
 
-wb_template = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
-
 eps_df.columns = eps_df.columns.str.strip().str.upper()
 eps_lista = eps_df["EPS"].dropna().tolist()
 
 cie10_df["Codigo"] = cie10_df["Codigo"].astype(str).str.strip().str.upper()
 
-
 # =========================
-# FUNCIONES
+# FUNCIONES ORIGINALES RESTAURADAS
 # =========================
 
-def calcular_dias(inicio, fin):
+def calculate_total_days(start_date_str, end_date_str):
 
-    if not inicio or not fin:
+    if start_date_str is None or end_date_str is None:
         return None
 
     try:
-        return (
-            datetime.strptime(fin, "%d/%m/%Y")
-            - datetime.strptime(inicio, "%d/%m/%Y")
-        ).days + 1
-
-    except:
+        start_date = datetime.strptime(start_date_str, "%d/%m/%Y")
+        end_date = datetime.strptime(end_date_str, "%d/%m/%Y")
+        return (end_date - start_date).days + 1
+    except ValueError:
         return None
 
 
@@ -96,19 +87,109 @@ def homologar_eps(eps_extraida):
     if not eps_extraida:
         return None
 
-    matches = difflib.get_close_matches(
+    coincidencias = difflib.get_close_matches(
         eps_extraida.upper(),
-        [e.upper() for e in eps_lista],
+        [x.upper() for x in eps_lista],
         n=1,
         cutoff=0.5
     )
 
-    if matches:
+    if coincidencias:
         for eps in eps_lista:
-            if eps.upper() == matches[0]:
+            if eps.upper() == coincidencias[0]:
                 return eps
 
     return eps_extraida
+
+
+# =========================
+# EXTRACCIÓN COMPLETA (TU VERSIÓN ORIGINAL)
+# =========================
+
+def extract_data(text):
+
+    patient_name = None
+    identification = None
+    diagnosis = None
+    date_of_attention = None
+    order = None
+    prorogation = None
+    start_date = None
+    end_date = None
+    eps = None
+    tipo_incapacidad = None
+    grupo_servicio = None
+
+    # PACIENTE
+    m = re.search(
+        r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
+        text
+    )
+    if m:
+        patient_name = m.group(1).strip()
+
+    # IDENTIFICACIÓN
+    m = re.search(r'Identificación:\s*CC\s*(\d+)', text)
+    if m:
+        identification = m.group(1).strip()
+
+    # DX
+    m = re.search(r'\b([A-Z]\d{2,3}[A-Z]?)\b', text)
+    if m:
+        diagnosis = m.group(1).strip().upper()
+
+    # EPS
+    eps_lines = re.findall(r'EPS:\s*(.*)', text)
+    if eps_lines:
+        eps = homologar_eps(eps_lines[-1].strip())
+
+    # FECHAS
+    m = re.search(r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})', text)
+    if m:
+        start_date = m.group(1)
+
+    m = re.search(r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})', text)
+    if m:
+        end_date = m.group(1)
+
+    # ORDEN / FECHA ATENCIÓN
+    m = re.search(r'Orden:\s*\d+\n(\d{4}/\d{2}/\d{2})', text)
+    if m:
+        date_of_attention = m.group(1)
+
+    m = re.search(r'Orden:\s*(\d+)', text)
+    if m:
+        order = m.group(1)
+
+    # PRÓRROGA
+    m = re.search(r'Prórroga:\s*(NO|SI)', text)
+    if m:
+        prorogation = m.group(1)
+
+    # TIPO
+    m = re.search(r'Tipo Incapacidad:\s*(.*)', text)
+    if m:
+        tipo_incapacidad = m.group(1).strip()
+
+    # GRUPO
+    m = re.search(r'Grupo Servicio:\s*(.*)', text)
+    if m:
+        grupo_servicio = m.group(1).strip()
+
+    return {
+        "Documento": identification,
+        "Paciente": patient_name,
+        "DX": diagnosis,
+        "EPS": eps,
+        "Fecha Inicio": start_date,
+        "Fecha Fin": end_date,
+        "FECHA": date_of_attention,
+        "ORDEN": order,
+        "PRORROGA": prorogation,
+        "Tipo Incapacidad": tipo_incapacidad,
+        "Grupo Servicio": grupo_servicio,
+        "Dias": calculate_total_days(start_date, end_date)
+    }
 
 
 # =========================
@@ -129,52 +210,27 @@ def procesar():
 
         zip_buffer = BytesIO()
 
-        # 🔥 TODO DEBE IR DENTRO DEL WITH
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-
-            # =========================
-            # PROCESAR PDFs
-            # =========================
 
             for file in files:
 
-                file_bytes = file.read()
-
-                pdf = fitz.open(stream=file_bytes, filetype="pdf")
+                pdf = fitz.open(stream=file.read(), filetype="pdf")
 
                 if len(pdf) == 0:
                     continue
 
                 text = pdf[0].get_text("text")
 
-                doc = re.search(r'Identificación:\s*CC\s*(\d+)', text)
-                name = re.search(r'PRESCRIPCIÓN.*?\n(.*?)\nIdentificación:', text)
-                dx = re.search(r'\b([A-Z]\d{2,3}[A-Z]?)\b', text)
+                data = extract_data(text)
+                all_data.append(data)
 
-                eps = re.findall(r'EPS:\s*(.*)', text)
-                start = re.search(r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})', text)
-                end = re.search(r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})', text)
-
-                all_data.append({
-                    "Documento": doc.group(1) if doc else None,
-                    "Paciente": name.group(1).strip() if name else None,
-                    "DX": dx.group(1).strip().upper() if dx else None,
-                    "EPS": homologar_eps(eps[-1].strip()) if eps else None,
-                    "Inicio": start.group(1) if start else None,
-                    "Fin": end.group(1) if end else None,
-                    "Dias": calcular_dias(
-                        start.group(1) if start else None,
-                        end.group(1) if end else None
-                    )
-                })
-
-                # ✔ agregar PDF al ZIP
-                zip_file.writestr(file.filename, file_bytes)
+                # guardar pdf original
+                zip_file.writestr(file.filename, file.read())
 
                 pdf.close()
 
             # =========================
-            # DATAFRAME
+            # DATAFRAME FINAL
             # =========================
 
             df = pd.DataFrame(all_data)
@@ -189,14 +245,14 @@ def procesar():
                 how="left"
             )
 
-            df["DX"] = df["DX"].fillna("") + " - " + df["Nombre"].fillna("")
+            df["DX"] = df["DX"] + " - " + df["Nombre"]
 
             df.drop(columns=["Nombre", "Codigo"], inplace=True, errors="ignore")
 
-            df.insert(0, "Fecha Generación", datetime.now().strftime("%d/%m/%Y"))
+            df.insert(0, "Fecha envio dra", datetime.now().strftime("%d/%m/%Y"))
 
             # =========================
-            # EXCEL EN PLANTILLA
+            # PLANTILLA
             # =========================
 
             wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
@@ -213,7 +269,7 @@ def procesar():
                     ws.cell(row=r_idx, column=c_idx, value=value)
 
             # =========================
-            # AGREGAR EXCEL AL ZIP
+            # EXCEL AL ZIP
             # =========================
 
             excel_buffer = BytesIO()
@@ -225,7 +281,6 @@ def procesar():
                 excel_buffer.read()
             )
 
-        # 🔥 fuera del with SOLO cerrar buffer
         zip_buffer.seek(0)
 
         logger.info("fin", "ZIP generado correctamente", {"registros": len(df)})
@@ -241,7 +296,7 @@ def procesar():
 
         logger.error(
             "error",
-            "Error en procesamiento",
+            "Fallo en procesamiento",
             {
                 "error": str(e),
                 "trace": traceback.format_exc()
