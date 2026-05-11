@@ -5,9 +5,9 @@ import difflib
 import os
 import json
 import traceback
-import zipfile
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from io import BytesIO
 
 from flask import Flask, request, send_file, jsonify
@@ -32,7 +32,7 @@ class JsonLogger:
 
     def log(self, level, event, message, extra=None):
         entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(ZoneInfo("America/Bogota")).isoformat(),
             "level": level,
             "event": event,
             "message": message
@@ -106,7 +106,7 @@ def homologar_eps(eps_extraida):
 
 
 # =========================
-# EXTRACCIÓN (TU VERSIÓN BUENA)
+# EXTRACCIÓN
 # =========================
 
 def extract_data(text):
@@ -197,126 +197,108 @@ def procesar():
 
         files = request.files.getlist("files")
 
+        now_co = datetime.now(ZoneInfo("America/Bogota"))
+
         logger.info("inicio", "Procesamiento iniciado", {"total": len(files)})
 
         all_data = []
-        zip_buffer = BytesIO()
 
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file in files:
 
-            for file in files:
+            pdf = fitz.open(stream=file.read(), filetype="pdf")
 
-                pdf = fitz.open(stream=file.read(), filetype="pdf")
+            if len(pdf) == 0:
+                continue
 
-                if len(pdf) == 0:
-                    continue
+            text = pdf[0].get_text("text")
 
-                text = pdf[0].get_text("text")
+            data = extract_data(text)
+            all_data.append(data)
 
-                data = extract_data(text)
-                all_data.append(data)
+            pdf.close()
 
-                # guardar PDF original
-                zip_file.writestr(file.filename, file.read())
+        # =========================
+        # DATAFRAME
+        # =========================
 
-                pdf.close()
+        df = pd.DataFrame(all_data)
 
-            # =========================
-            # DATAFRAME FINAL
-            # =========================
+        df["CONCATENAR"] = df["Documento"].astype(str) + " " + df["Paciente"].astype(str)
+        df["Total de Días"] = df["Dias"]
+        df["Observacion"] = None
+        df["Fecha envio dra"] = now_co.strftime("%d/%m/%Y")
 
-            df = pd.DataFrame(all_data)
+        # =========================
+        # CIE10
+        # =========================
 
-            df["CONCATENAR"] = df["Documento"].astype(str) + " " + df["Paciente"].astype(str)
+        df["DX"] = df["DX"].astype(str).str.strip().str.upper()
 
-            df["Total de Días"] = df["Dias"]
+        df = pd.merge(
+            df,
+            cie10_df,
+            left_on="DX",
+            right_on="Codigo",
+            how="left"
+        )
 
-            df["Observacion"] = None
+        df["DX"] = df["DX"] + " - " + df["Nombre"]
 
-            df["Fecha envio dra"] = datetime.now().strftime("%d/%m/%Y")
+        df.drop(columns=["Nombre", "Codigo"], inplace=True, errors="ignore")
 
-            # =========================
-            # CIE10
-            # =========================
+        # =========================
+        # ORDEN COLUMNAS
+        # =========================
 
-            df["DX"] = df["DX"].astype(str).str.strip().str.upper()
+        COLUMNAS = [
+            "Fecha envio dra",
+            "Documento",
+            "Paciente",
+            "CONCATENAR",
+            "Fecha Inicio",
+            "Fecha Fin",
+            "Total de Días",
+            "Dias",
+            "EPS",
+            "Observacion",
+            "DX",
+            "FECHA",
+            "ORDEN",
+            "PRORROGA",
+            "Tipo Incapacidad",
+            "Grupo Servicio"
+        ]
 
-            df = pd.merge(
-                df,
-                cie10_df,
-                left_on="DX",
-                right_on="Codigo",
-                how="left"
-            )
+        df = df.reindex(columns=COLUMNAS)
 
-            df["DX"] = df["DX"] + " - " + df["Nombre"]
+        # =========================
+        # EXCEL
+        # =========================
 
-            df.drop(columns=["Nombre", "Codigo"], inplace=True, errors="ignore")
+        wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
+        ws = wb["INFO"]
 
-            # =========================
-            # ORDEN EXACTO PLANTILLA
-            # =========================
+        if ws.max_row > 1:
+            ws.delete_rows(2, ws.max_row)
 
-            COLUMNAS = [
-                "Fecha envio dra",
-                "Documento",
-                "Paciente",
-                "CONCATENAR",
-                "Fecha Inicio",
-                "Fecha Fin",
-                "Total de Días",
-                "Dias",
-                "EPS",
-                "Observacion",
-                "DX",
-                "FECHA",
-                "ORDEN",
-                "PRORROGA",
-                "Tipo Incapacidad",
-                "Grupo Servicio"
-            ]
+        for r_idx, row in enumerate(
+            dataframe_to_rows(df, index=False, header=False),
+            start=2
+        ):
+            for c_idx, value in enumerate(row, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
 
-            df = df.reindex(columns=COLUMNAS)
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
 
-            # =========================
-            # EXCEL PLANTILLA
-            # =========================
-
-            wb = load_workbook(os.path.join(BASE_DIR, "PLANTILLA.xlsx"))
-            ws = wb["INFO"]
-
-            if ws.max_row > 1:
-                ws.delete_rows(2, ws.max_row)
-
-            for r_idx, row in enumerate(
-                dataframe_to_rows(df, index=False, header=False),
-                start=2
-            ):
-                for c_idx, value in enumerate(row, start=1):
-                    ws.cell(row=r_idx, column=c_idx, value=value)
-
-            # =========================
-            # EXCEL AL ZIP
-            # =========================
-
-            excel_buffer = BytesIO()
-            wb.save(excel_buffer)
-            excel_buffer.seek(0)
-
-            zip_file.writestr(
-                f"Formato_Rechazos_Sura_{datetime.now().strftime('%d-%m-%Y')}.xlsx",
-                excel_buffer.read()
-            )
-
-        zip_buffer.seek(0)
-
-        logger.info("fin", "ZIP generado correctamente", {"registros": len(df)})
+        logger.info("fin", "Excel generado correctamente", {"registros": len(df)})
 
         return send_file(
-            zip_buffer,
-            mimetype="application/zip",
+            excel_buffer,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             as_attachment=True,
-            download_name="resultado.zip"
+            download_name=f"Formato_Rechazos_Sura_{now_co.strftime('%d-%m-%Y')}.xlsx"
         )
 
     except Exception as e:
