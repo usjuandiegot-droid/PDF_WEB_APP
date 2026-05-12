@@ -4,3 +4,4 @@ openpyxl
 pymupdf
 gunicorn
 flask-cors
+pillow
