@@ -23,7 +23,10 @@ from openpyxl.drawing.image import Image
 # =========================
 
 app = Flask(__name__)
-CORS(app)
+CORS(
+    app,
+    expose_headers=["Content-Disposition"]
+)
 
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
