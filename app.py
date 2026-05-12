@@ -146,10 +146,7 @@ def extract_data(text):
     tipo_incapacidad = None
     grupo_servicio = None
 
-    # =========================
     # PACIENTE
-    # =========================
-
     m = re.search(
         r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
         text
@@ -158,10 +155,7 @@ def extract_data(text):
     if m:
         patient_name = m.group(1).strip()
 
-    # =========================
     # DOCUMENTO
-    # =========================
-
     m = re.search(
         r'Identificación:\s*CC\s*(\d+)',
         text
@@ -170,10 +164,7 @@ def extract_data(text):
     if m:
         identification = m.group(1).strip()
 
-    # =========================
     # DX
-    # =========================
-
     m = re.search(
         r'\b([A-Z]\d{2,3}[A-Z]?)\b',
         text
@@ -182,10 +173,7 @@ def extract_data(text):
     if m:
         diagnosis = m.group(1).strip().upper()
 
-    # =========================
     # EPS
-    # =========================
-
     eps_lines = re.findall(
         r'EPS:\s*(.*)',
         text
@@ -197,10 +185,7 @@ def extract_data(text):
             eps_lines[-1].strip()
         )
 
-    # =========================
     # FECHA INICIO
-    # =========================
-
     m = re.search(
         r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})',
         text
@@ -209,10 +194,7 @@ def extract_data(text):
     if m:
         start_date = m.group(1)
 
-    # =========================
     # FECHA FIN
-    # =========================
-
     m = re.search(
         r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})',
         text
@@ -221,10 +203,7 @@ def extract_data(text):
     if m:
         end_date = m.group(1)
 
-    # =========================
     # FECHA ATENCIÓN
-    # =========================
-
     m = re.search(
         r'Orden:\s*\d+\n(\d{4}/\d{2}/\d{2})',
         text
@@ -233,10 +212,7 @@ def extract_data(text):
     if m:
         date_of_attention = m.group(1)
 
-    # =========================
     # ORDEN
-    # =========================
-
     m = re.search(
         r'Orden:\s*(\d+)',
         text
@@ -245,10 +221,7 @@ def extract_data(text):
     if m:
         order = m.group(1)
 
-    # =========================
     # PRÓRROGA
-    # =========================
-
     m = re.search(
         r'Prórroga:\s*(NO|SI)',
         text
@@ -257,10 +230,7 @@ def extract_data(text):
     if m:
         prorogation = m.group(1)
 
-    # =========================
     # TIPO
-    # =========================
-
     m = re.search(
         r'Tipo Incapacidad:\s*(.*)',
         text
@@ -269,10 +239,7 @@ def extract_data(text):
     if m:
         tipo_incapacidad = m.group(1).strip()
 
-    # =========================
     # GRUPO
-    # =========================
-
     m = re.search(
         r'Grupo Servicio:\s*(.*)',
         text
@@ -453,11 +420,17 @@ def procesar():
         ws = wb["INFO"]
 
         # =========================
-        # LIMPIAR FILAS
+        # LIMPIAR SOLO VALORES
         # =========================
 
-        if ws.max_row > 1:
-            ws.delete_rows(2, ws.max_row)
+        for row in ws.iter_rows(
+            min_row=2,
+            max_row=300,
+            min_col=1,
+            max_col=16
+        ):
+            for cell in row:
+                cell.value = None
 
         # =========================
         # INSERTAR DATOS
@@ -494,8 +467,8 @@ def procesar():
 
         if os.path.exists(firma_path):
 
-            fila_base = 35
-            salto = 35
+            fila_base = 14
+            salto = 31
 
             for i in range(len(df)):
 
