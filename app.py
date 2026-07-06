@@ -1,7 +1,7 @@
-import fitz
+#INCAPACIDADES V2
+import fitz  # PyMuPDF
 import pandas as pd
 import re
-import difflib
 import os
 import json
 import traceback
@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from io import BytesIO
 
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 from openpyxl import load_workbook
@@ -18,28 +18,29 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.drawing.image import Image
 
 
-# =========================
-# APP
-# =========================
+# ==========================================================
+# FLASK
+# ==========================================================
 
 app = Flask(__name__)
+
 CORS(
     app,
     expose_headers=["Content-Disposition"]
 )
 
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 
-# =========================
-# LOGS
-# =========================
+# ==========================================================
+# LOGGER
+# ==========================================================
 
 class JsonLogger:
 
     def log(self, level, event, message, extra=None):
 
-        entry = {
+        log = {
             "timestamp": datetime.now(
                 ZoneInfo("America/Bogota")
             ).isoformat(),
@@ -49,9 +50,9 @@ class JsonLogger:
         }
 
         if extra:
-            entry["extra"] = extra
+            log["extra"] = extra
 
-        print(json.dumps(entry))
+        print(json.dumps(log))
 
     def info(self, event, message, extra=None):
         self.log("info", event, message, extra)
@@ -63,80 +64,81 @@ class JsonLogger:
 logger = JsonLogger()
 
 
-# =========================
-# BASE DIR
-# =========================
+# ==========================================================
+# ARCHIVOS BASE
+# ==========================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-cie10_df = pd.read_excel(
-    os.path.join(BASE_DIR, "CIE10.xlsx")
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
 )
 
-eps_df = pd.read_excel(
-    os.path.join(BASE_DIR, "EPS.xlsx")
+PLANTILLA_FILE = os.path.join(
+    BASE_DIR,
+    "PLANTILLA.xlsx"
 )
 
-eps_df.columns = eps_df.columns.str.strip().str.upper()
+CIE10_FILE = os.path.join(
+    BASE_DIR,
+    "CIE10.xlsx"
+)
 
-eps_lista = eps_df["EPS"].dropna().tolist()
+FIRMA_FILE = os.path.join(
+    BASE_DIR,
+    "firma.png"
+)
+
+
+# ==========================================================
+# CARGAR CIE10
+# ==========================================================
+
+cie10_df = pd.read_excel(CIE10_FILE)
 
 cie10_df["Codigo"] = (
     cie10_df["Codigo"]
     .astype(str)
     .str.strip()
-    .str.upper()
 )
 
 
-# =========================
+# ==========================================================
 # FUNCIONES
-# =========================
+# ==========================================================
 
-def calculate_total_days(start, end):
+def calculate_total_days(start_date_str, end_date_str):
 
-    if not start or not end:
+    if start_date_str is None or end_date_str is None:
         return None
 
     try:
 
+        start_date = datetime.strptime(
+            start_date_str,
+            "%d/%m/%Y"
+        )
+
+        end_date = datetime.strptime(
+            end_date_str,
+            "%d/%m/%Y"
+        )
+
         return (
-            datetime.strptime(end, "%d/%m/%Y")
-            - datetime.strptime(start, "%d/%m/%Y")
+            end_date - start_date
         ).days + 1
 
-    except:
+    except ValueError:
+
         return None
 
 
-def homologar_eps(eps_extraida):
-
-    if not eps_extraida:
-        return None
-
-    matches = difflib.get_close_matches(
-        eps_extraida.upper(),
-        [x.upper() for x in eps_lista],
-        n=1,
-        cutoff=0.5
-    )
-
-    if matches:
-
-        for eps in eps_lista:
-
-            if eps.upper() == matches[0]:
-                return eps
-
-    return eps_extraida
-
-
-# =========================
-# EXTRACCIÓN
-# =========================
+# ==========================================================
+# EXTRACCIÓN DE INFORMACIÓN DEL PDF
+# (Basada exactamente en el script de Colab)
+# ==========================================================
 
 def extract_data(text):
 
+    # Inicializar variables
     patient_name = None
     identification = None
     diagnosis = None
@@ -149,209 +151,282 @@ def extract_data(text):
     tipo_incapacidad = None
     grupo_servicio = None
 
+    # ======================================================
     # PACIENTE
-    m = re.search(
+    # ======================================================
+
+    patient_name_match = re.search(
         r'PRESCRIPCIÓN DE INCAPACIDAD/LICENCIA DE MATERNIDAD\s*([^\n]*)\s*Identificación:',
         text
     )
 
-    if m:
-        patient_name = m.group(1).strip()
+    if patient_name_match:
+        patient_name = patient_name_match.group(1).strip()
 
+    # ======================================================
     # DOCUMENTO
-    m = re.search(
+    # ======================================================
+
+    identification_match = re.search(
         r'Identificación:\s*CC\s*(\d+)',
         text
     )
 
-    if m:
-        identification = m.group(1).strip()
+    if identification_match:
+        identification = identification_match.group(1).strip()
 
-    # DX
-    m = re.search(
+    # ======================================================
+    # DIAGNÓSTICO
+    # ======================================================
+
+    diagnosis_code_match = re.search(
         r'\b([A-Z]\d{2,3}[A-Z]?)\b',
         text
     )
 
-    if m:
-        diagnosis = m.group(1).strip().upper()
+    if diagnosis_code_match:
+        diagnosis = diagnosis_code_match.group(1).strip()
+    else:
+        diagnosis = None
 
+    # ======================================================
     # EPS
+    # ======================================================
+
     eps_lines = re.findall(
         r'EPS:\s*(.*)',
         text
     )
 
     if eps_lines:
+        eps = eps_lines[-1].strip()
 
-        eps = homologar_eps(
-            eps_lines[-1].strip()
-        )
-
+    # ======================================================
     # FECHA INICIO
-    m = re.search(
+    # ======================================================
+
+    start_date_match = re.search(
         r'Fecha Inicio:\s*(\d{2}/\d{2}/\d{4})',
         text
     )
 
-    if m:
-        start_date = m.group(1)
+    if start_date_match:
+        start_date = start_date_match.group(1).strip()
 
+    # ======================================================
     # FECHA FIN
-    m = re.search(
+    # ======================================================
+
+    end_date_match = re.search(
         r'Fecha Fin:\s*(\d{2}/\d{2}/\d{4})',
         text
     )
 
-    if m:
-        end_date = m.group(1)
+    if end_date_match:
+        end_date = end_date_match.group(1).strip()
 
+    # ======================================================
     # FECHA ATENCIÓN
-    m = re.search(
+    # ======================================================
+
+    date_of_attention_match = re.search(
         r'Orden:\s*\d+\n(\d{4}/\d{2}/\d{2})',
         text
     )
 
-    if m:
-        date_of_attention = m.group(1)
+    if date_of_attention_match:
+        date_of_attention = date_of_attention_match.group(1).strip()
 
+    # ======================================================
     # ORDEN
-    m = re.search(
+    # ======================================================
+
+    order_match = re.search(
         r'Orden:\s*(\d+)',
         text
     )
 
-    if m:
-        order = m.group(1)
+    if order_match:
+        order = order_match.group(1).strip()
 
+    # ======================================================
     # PRÓRROGA
-    m = re.search(
+    # ======================================================
+
+    prorogation_match = re.search(
         r'Prórroga:\s*(NO|SI)',
         text
     )
 
-    if m:
-        prorogation = m.group(1)
+    if prorogation_match:
+        prorogation = prorogation_match.group(1).strip()
 
-    # TIPO
-    m = re.search(
+    # ======================================================
+    # TIPO INCAPACIDAD
+    # ======================================================
+
+    tipo_incapacidad_match = re.search(
         r'Tipo Incapacidad:\s*(.*)',
         text
     )
 
-    if m:
-        tipo_incapacidad = m.group(1).strip()
+    if tipo_incapacidad_match:
+        tipo_incapacidad = tipo_incapacidad_match.group(1).strip()
 
-    # GRUPO
-    m = re.search(
+    # ======================================================
+    # GRUPO SERVICIO
+    # ======================================================
+
+    grupo_servicio_match = re.search(
         r'Grupo Servicio:\s*(.*)',
         text
     )
 
-    if m:
-        grupo_servicio = m.group(1).strip()
+    if grupo_servicio_match:
+        grupo_servicio = grupo_servicio_match.group(1).strip()
+
+    # ======================================================
+    # TOTAL DÍAS
+    # ======================================================
+
+    total_days = calculate_total_days(
+        start_date,
+        end_date
+    )
+
+    # ======================================================
+    # RETORNAR RESULTADO
+    # ======================================================
 
     return {
+
         "Documento": identification,
+
         "Paciente": patient_name,
-        "CONCATENAR": (
+
+        "CONCATENAR":
             f"{identification} {patient_name}"
             if identification and patient_name
-            else None
-        ),
+            else None,
+
         "Fecha de Inicio": start_date,
+
         "Fecha de Fin": end_date,
-        "Total de Días": calculate_total_days(
-            start_date,
-            end_date
-        ),
-        "Dias": calculate_total_days(
-            start_date,
-            end_date
-        ),
+
+        "Total de Días": total_days,
+
+        "Dias": None,
+
         "EPS": eps,
+
         "Observacion": None,
+
         "DX": diagnosis,
+
         "FECHA": date_of_attention,
+
         "ORDEN": order,
+
         "PRORROGA": prorogation,
+
         "Tipo Incapacidad": tipo_incapacidad,
+
         "Grupo Servicio": grupo_servicio
     }
 
-
-# =========================
+# ==========================================================
 # ENDPOINT
-# =========================
+# ==========================================================
 
 @app.route("/procesar", methods=["POST"])
-
 def procesar():
 
     try:
 
+        # ==========================================
+        # RECIBIR ARCHIVOS
+        # ==========================================
+
         files = request.files.getlist("files")
 
         if len(files) == 0:
-
             return jsonify({
-                "error": "No se enviaron archivos"
+                "error": "No se enviaron archivos."
             }), 400
 
         if len(files) > 29:
-
             return jsonify({
-                "error": "Máximo 29 archivos"
+                "error": "Máximo 29 archivos por proceso."
             }), 400
 
         logger.info(
             "inicio",
             "Procesamiento iniciado",
-            {"total": len(files)}
+            {
+                "archivos": len(files)
+            }
         )
 
         all_data = []
 
-        # =========================
-        # PROCESAR PDFs
-        # =========================
+        # ==========================================
+        # LEER CADA PDF
+        # ==========================================
 
         for file in files:
 
-            pdf_bytes = file.read()
+            try:
 
-            pdf = fitz.open(
-                stream=pdf_bytes,
-                filetype="pdf"
-            )
+                pdf_bytes = file.read()
 
-            if len(pdf) == 0:
-                continue
+                pdf_document = fitz.open(
+                    stream=pdf_bytes,
+                    filetype="pdf"
+                )
 
-            text = pdf[0].get_text("text")
+                if len(pdf_document) == 0:
+                    continue
 
-            data = extract_data(text)
+                first_page = pdf_document[0]
 
-            all_data.append(data)
+                text = first_page.get_text("text")
 
-            pdf.close()
+                data = extract_data(text)
 
-        # =========================
+                all_data.append(data)
+
+                pdf_document.close()
+
+            except Exception as e:
+
+                logger.error(
+                    "pdf",
+                    f"Error leyendo {file.filename}",
+                    {
+                        "error": str(e)
+                    }
+                )
+
+        # ==========================================
+        # VALIDAR RESULTADOS
+        # ==========================================
+
+        if len(all_data) == 0:
+
+            return jsonify({
+                "error": "No fue posible extraer información de ningún PDF."
+            }), 400
+
+        # ==========================================
         # DATAFRAME
-        # =========================
+        # ==========================================
 
         df = pd.DataFrame(all_data)
 
-        # =========================
-        # CIE10
-        # =========================
-
-        df["DX"] = (
-            df["DX"]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
+        # ==========================================
+        # MERGE CIE10
+        # (idéntico al script de Colab)
+        # ==========================================
 
         df = pd.merge(
             df,
@@ -368,63 +443,81 @@ def procesar():
         )
 
         df.drop(
-            columns=["Nombre", "Codigo"],
-            inplace=True,
-            errors="ignore"
+            columns=[
+                "Codigo",
+                "Nombre"
+            ],
+            inplace=True
         )
 
-        # =========================
-        # FECHA COLOMBIA
-        # =========================
+        # ==========================================
+        # FECHA ACTUAL
+        # ==========================================
 
-        now_co = datetime.now(
+        fecha_actual = datetime.now(
             ZoneInfo("America/Bogota")
         )
 
         df.insert(
             0,
             "Fecha envio dra",
-            now_co.strftime("%d/%m/%Y")
+            fecha_actual.strftime("%d/%m/%Y")
         )
 
-        # =========================
-        # ORDEN COLUMNAS
-        # =========================
+        # ==========================================
+        # ORDENAR COLUMNAS
+        # ==========================================
 
         columnas = [
+
             "Fecha envio dra",
+
             "Documento",
+
             "Paciente",
+
             "CONCATENAR",
+
             "Fecha de Inicio",
+
             "Fecha de Fin",
+
             "Total de Días",
+
             "Dias",
+
             "EPS",
+
             "Observacion",
+
             "DX",
+
             "FECHA",
+
             "ORDEN",
+
             "PRORROGA",
+
             "Tipo Incapacidad",
+
             "Grupo Servicio"
+
         ]
 
         df = df.reindex(columns=columnas)
 
-        # =========================
-        # CARGAR PLANTILLA
-        # =========================
 
-        wb = load_workbook(
-            os.path.join(BASE_DIR, "PLANTILLA.xlsx")
-        )
+        # ==========================================
+        # CARGAR PLANTILLA
+        # ==========================================
+
+        wb = load_workbook(PLANTILLA_FILE)
 
         ws = wb["INFO"]
 
-        # =========================
-        # LIMPIAR SOLO VALORES
-        # =========================
+        # ==========================================
+        # LIMPIAR DATOS ANTERIORES
+        # ==========================================
 
         for row in ws.iter_rows(
             min_row=2,
@@ -435,9 +528,9 @@ def procesar():
             for cell in row:
                 cell.value = None
 
-        # =========================
-        # INSERTAR DATOS
-        # =========================
+        # ==========================================
+        # ESCRIBIR DATAFRAME
+        # ==========================================
 
         for r_idx, row in enumerate(
             dataframe_to_rows(
@@ -455,41 +548,35 @@ def procesar():
 
                 ws.cell(
                     row=r_idx,
-                    column=c_idx,
-                    value=value
-                )
+                    column=c_idx
+                ).value = value
 
-        # =========================
+        # ==========================================
         # INSERTAR FIRMAS
-        # =========================
+        # ==========================================
 
-        firma_path = os.path.join(
-            BASE_DIR,
-            "firma.png"
-        )
-
-        if os.path.exists(firma_path):
+        if os.path.exists(FIRMA_FILE):
 
             fila_base = 14
             salto = 31
 
             for i in range(len(df)):
 
-                fila_firma = fila_base + (i * salto)
+                fila = fila_base + (i * salto)
 
-                firma = Image(firma_path)
+                firma = Image(FIRMA_FILE)
 
                 firma.width = 180
                 firma.height = 80
 
                 ws.add_image(
                     firma,
-                    f"F{fila_firma}"
+                    f"F{fila}"
                 )
 
-        # =========================
-        # GENERAR EXCEL
-        # =========================
+        # ==========================================
+        # GUARDAR EN MEMORIA
+        # ==========================================
 
         excel_buffer = BytesIO()
 
@@ -500,41 +587,48 @@ def procesar():
         logger.info(
             "fin",
             "Excel generado correctamente",
-            {"registros": len(df)}
+            {
+                "registros": len(df)
+            }
         )
 
         return send_file(
+
             excel_buffer,
-            mimetype=(
-                "application/vnd.openxmlformats-"
-                "officedocument.spreadsheetml.sheet"
-            ),
+
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+
             as_attachment=True,
-            download_name=(
-                f"Formato_Rechazos_Sura_"
-                f"{now_co.strftime('%d-%m-%Y')}.xlsx"
-            )
+
+            download_name=f"Formato_Rechazos_Sura_{fecha_actual.strftime('%d-%m-%Y')}.xlsx"
+
         )
 
     except Exception as e:
 
         logger.error(
+
             "error",
-            "Fallo en procesamiento",
+
+            "Error general",
+
             {
                 "error": str(e),
                 "trace": traceback.format_exc()
             }
+
         )
 
         return jsonify({
+
             "error": str(e)
+
         }), 500
 
 
-# =========================
+# ==========================================================
 # RUN
-# =========================
+# ==========================================================
 
 if __name__ == "__main__":
 
