@@ -100,6 +100,11 @@ cie10_df["Codigo"] = (
     .str.strip()
 )
 
+# ==========================================================
+# CONFIGURACIÓN
+# ==========================================================
+
+EPS_DEFAULT = "EPS SURA"
 
 # ==========================================================
 # FUNCIONES
@@ -193,14 +198,15 @@ def extract_data(text):
     # EPS
     # ======================================================
 
-    eps_lines = re.findall(
-        r'EPS:\s*(.*)',
-        text
+    eps_match = re.search(
+    r'(?m)^\s*EPS\s*:\s*(.+)$',
+    text
     )
 
-    if eps_lines:
-        eps = eps_lines[-1].strip()
-
+    if eps_match:
+        eps = eps_match.group(1).strip()
+    else:
+        eps = EPS_DEFAULT
     # ======================================================
     # FECHA INICIO
     # ======================================================
